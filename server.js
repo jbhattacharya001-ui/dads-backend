@@ -29,7 +29,7 @@ let pendingOrders = {};
 let ordersCollection;
 
 // Save order
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', async (req, res) => {
   const order = req.body;
   // orders.push(order);
   await ordersCollection.insertOne(order);
@@ -37,13 +37,13 @@ app.post('/api/orders', (req, res) => {
 });
 
 // Get orders
-app.get('/api/orders', (req, res) => {
+app.get('/api/orders',  async (req, res) => {
   const orders = await ordersCollection.find().toArray();
 res.json(orders);
 });
 
 // Delete orders
-app.delete('/api/orders', (req, res) => {
+app.delete('/api/orders', async (req, res) => {
   // orders = [];
   await ordersCollection.deleteMany({});
   res.json({ success: true });
