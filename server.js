@@ -5,7 +5,8 @@ const { MongoClient } = require('mongodb');
 const app = express();
 app.use(cors());
 app.use(express.json());
-const uri = "mongodb+srv://ankitchess2012_db_user:your password@cluster0.hjtwmne.mongodb.net/?appName=Cluster0";
+const uri = process.env.MONGO_URI;
+
 
 const client = new MongoClient(uri);
 
