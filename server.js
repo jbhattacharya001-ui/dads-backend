@@ -49,6 +49,19 @@ app.delete('/api/orders', async (req, res) => {
   await ordersCollection.deleteMany({});
   res.json({ success: true });
 });
+// app.get('/api/orders', async (req, res) => {
+//   const orders = await ordersCollection.find().toArray();
+//   res.json(orders);
+// });
+app.get('/api/buys', async (req, res) => {
+  try {
+    const orders = await ordersCollection.find().toArray();
+    res.json(orders);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch buys" });
+  }
+});
 // app.post('/api/pay', async (req, res) => {
 //   const { amount, orderData } = req.body;
 
@@ -189,9 +202,11 @@ app.post('/api/pay', async (req, res) => {
       merchantTransactionId: transactionId,
       merchantUserId: "USER_" + Date.now(),
       amount: amount * 100,
-      redirectUrl: "http://localhost:5500/#payment-success?txn=" + transactionId,
+      // redirectUrl: "http://localhost:5500/#payment-success?txn=" + transactionId,
+     redirectUrl: "https://your-frontend-url/#payment-success?txn=" + transactionId,
       redirectMode: "REDIRECT",
-      callbackUrl: "http://localhost:3001/api/payment-callback",
+      // callbackUrl: "http://localhost:3001/api/payment-callback",
+      callbackUrl: "https://dads-backend.onrender.com/api/payment-callback",
       paymentInstrument: { type: "PAY_PAGE" }
     };
 
@@ -238,13 +253,20 @@ app.post('/api/payment-callback', (req, res) => {
       const order = pendingOrders[txnId];
 
       // ✅ SAVE TO REAL ORDERS
-      orders.push({
-        ...order,
-        status: "Placed",
-        pay: "PhonePe",
-        paid: true,
-        txnId
-      });
+      // orders.push({
+      //   ...order,
+      //   status: "Placed",
+      //   pay: "PhonePe",
+      //   paid: true,
+      //   txnId
+      // });
+      await ordersCollection.insertOne({
+  ...order,
+  status: "Placed",
+  pay: "PhonePe",
+  paid: true,
+  txnId
+});
 
       delete pendingOrders[txnId];
 
