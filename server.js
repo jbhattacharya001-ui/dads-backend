@@ -1,23 +1,81 @@
 
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const { MongoClient } = require('mongodb');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const app = express();
 app.use(cors());
 app.use(express.json());
-const uri = process.env.MONGO_URI;
+const uri = process.env.MONGO_URI || process.env.MONGODB_URI || process.env.MONGODB_URL || '';
 
 
-const client = new MongoClient(uri);
+const client = uri ? new MongoClient(uri) : null;
 
-async function connectDB() {
-  await client.connect();
-  const db = client.db("dadsWebsite");
-  ordersCollection = db.collection("orders");
-  console.log("MongoDB connected");
+let ordersCollection;
+let settingsCollection;
+
+function createMemoryCollection(store) {
+  return {
+    async findOne(query = {}) {
+      return store.find((item) => Object.keys(query).every((key) => item[key] === query[key])) || null;
+    },
+    async countDocuments() {
+      return store.length;
+    },
+    async insertOne(doc) {
+      store.push({ ...doc, _id: Date.now() + Math.random() });
+      return { insertedId: store[store.length - 1]._id };
+    },
+    async deleteMany() {
+      store.length = 0;
+      return { deletedCount: 0 };
+    },
+    async updateOne(query, update, options = {}) {
+      const index = store.findIndex((item) => Object.keys(query).every((key) => item[key] === query[key]));
+      if (index === -1) {
+        if (options.upsert) {
+          const doc = { ...query, ...update.$set };
+          store.push(doc);
+          return { upsertedCount: 1 };
+        }
+        return { matchedCount: 0, modifiedCount: 0 };
+      }
+      store[index] = { ...store[index], ...(update.$set || {}) };
+      return { matchedCount: 1, modifiedCount: 1 };
+    },
+    async findOneAndUpdate(query, update, options = {}) {
+      const index = store.findIndex((item) => Object.keys(query).every((key) => item[key] === query[key]));
+      if (index === -1) {
+        return { value: null };
+      }
+      store[index] = { ...store[index], ...(update.$set || {}) };
+      return { value: store[index] };
+    },
+    find() {
+      return {
+        toArray: async () => store.slice(),
+      };
+    },
+  };
 }
 
-connectDB();
+async function connectDB() {
+  if (!client) {
+    ordersCollection = createMemoryCollection([]);
+    settingsCollection = createMemoryCollection([]);
+    console.log('MongoDB URI not set, using in-memory storage');
+    return;
+  }
+
+  await client.connect();
+  const db = client.db('dadsWebsite');
+  ordersCollection = db.collection('orders');
+  settingsCollection = db.collection('settings');
+  console.log('MongoDB connected');
+}
+
+connectDB().catch((err) => console.error('MongoDB connection failed:', err));
 // Connect to MongoDB
 
 // const axios = require('axios');
@@ -27,14 +85,92 @@ connectDB();
 let pendingOrders = {};
 
 // let orders = [];
-let ordersCollection;
 
 // Save order
 app.post('/api/orders', async (req, res) => {
-  const order = req.body;
-  // orders.push(order);
-  await ordersCollection.insertOne(order);
-  res.json({ success: true });
+  try {
+    const order = req.body || {};
+
+    // check order limit (if set)
+    const s = await settingsCollection.findOne({ key: 'orderLimit' });
+    const limit = s && typeof s.value === 'number' ? s.value : null;
+    if (limit !== null) {
+      const total = await ordersCollection.countDocuments();
+      if (total >= limit) {
+        return res.status(400).json({ success: false, error: 'Order limit reached' });
+      }
+    }
+
+    // capture client IP
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip;
+    order.ip = ip;
+
+    // ensure basic fields
+    order.status = order.status || 'In Process';
+    order.placed = order.placed || new Date().toISOString();
+
+    await ordersCollection.insertOne(order);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error saving order:', err);
+    res.status(500).json({ success: false, error: 'Save failed' });
+  }
+});
+
+// Accept an order (admin)
+app.post('/api/orders/:id/accept', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const result = await ordersCollection.findOneAndUpdate(
+      { id },
+      { $set: { status: 'Placed', placed: new Date().toISOString(), progress: 0 } },
+      { returnDocument: 'after' }
+    );
+    res.json({ success: true, order: result.value });
+  } catch (err) {
+    console.error('Accept error:', err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// Decline/cancel an order (admin)
+app.post('/api/orders/:id/decline', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const reason = req.body && req.body.reason ? req.body.reason : 'Declined by admin';
+    const result = await ordersCollection.findOneAndUpdate(
+      { id },
+      { $set: { status: 'Cancelled', cancellationReason: reason, cancelledAt: new Date().toISOString(), progress: 0 } },
+      { returnDocument: 'after' }
+    );
+    res.json({ success: true, order: result.value });
+  } catch (err) {
+    console.error('Decline error:', err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// Order limit settings
+app.get('/api/settings/order-limit', async (req, res) => {
+  try {
+    const s = await settingsCollection.findOne({ key: 'orderLimit' });
+    res.json({ limit: s && typeof s.value === 'number' ? s.value : null });
+  } catch (err) {
+    console.error('Settings get error:', err);
+    res.status(500).json({ error: 'failed' });
+  }
+});
+
+app.post('/api/settings/order-limit', async (req, res) => {
+  try {
+    const limit = Number(req.body && req.body.limit);
+    if (isNaN(limit)) return res.status(400).json({ success: false });
+    await settingsCollection.updateOne({ key: 'orderLimit' }, { $set: { value: limit } }, { upsert: true });
+    res.json({ success: true, limit });
+  } catch (err) {
+    console.error('Settings set error:', err);
+    res.status(500).json({ success: false });
+  }
 });
 
 // Get orders
@@ -234,7 +370,7 @@ app.post('/api/pay', async (req, res) => {
     res.status(500).json({ success: false });
   }
 });
-app.post('/api/payment-callback', (req, res) => {
+app.post('/api/payment-callback', async (req, res) => {
   try {
     const data = req.body;
 
